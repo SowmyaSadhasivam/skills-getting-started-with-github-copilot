@@ -1,26 +1,13 @@
-"""
-High School Management System API
+import pytest
+from fastapi.testclient import TestClient
 
-A super simple FastAPI application that allows students to view and sign up
-for extracurricular activities at Mergington High School.
-"""
+import copy
+from src.app import app, activities as app_activities
 
-from fastapi import FastAPI, HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
-import os
-from pathlib import Path
+client = TestClient(app)
 
-app = FastAPI(title="Mergington High School API",
-              description="API for viewing and signing up for extracurricular activities")
-
-# Mount the static files directory
-current_dir = Path(__file__).parent
-app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
-          "static")), name="static")
-
-# In-memory activity database
-activities = {
+# Original activities data for test resets
+ORIGINAL_ACTIVITIES = {
     "Tennis Club": {
         "description": "Tennis lessons and competitive matches",
         "schedule": "Mondays and Wednesdays, 4:00 PM - 5:30 PM",
@@ -77,43 +64,42 @@ activities = {
     }
 }
 
+@pytest.fixture(autouse=True)
+def reset_activities():
+    app_activities.clear()
+    app_activities.update(copy.deepcopy(ORIGINAL_ACTIVITIES))
 
-@app.get("/")
-def root():
-    return RedirectResponse(url="/static/index.html")
+def test_get_activities():
+    response = client.get("/activities")
+    assert response.status_code == 200
+    data = response.json()
+    assert isinstance(data, dict)
+    assert "Tennis Club" in data
 
+def test_signup_and_unregister():
+    activity = "Tennis Club"
+    email = "testuser@mergington.edu"
+    # Ensure not already signed up
+    client.post(f"/activities/{activity}/unregister", params={"email": email})
+    # Sign up
+    response = client.post(f"/activities/{activity}/signup", params={"email": email})
+    assert response.status_code == 200
+    assert f"Signed up {email}" in response.json()["message"]
+    # Duplicate signup should fail
+    response2 = client.post(f"/activities/{activity}/signup", params={"email": email})
+    assert response2.status_code == 400
+    # Unregister
+    response3 = client.post(f"/activities/{activity}/unregister", params={"email": email})
+    assert response3.status_code == 200
+    assert f"Unregistered {email}" in response3.json()["message"]
+    # Unregister again should fail
+    response4 = client.post(f"/activities/{activity}/unregister", params={"email": email})
+    assert response4.status_code == 404
 
-@app.get("/activities")
-def get_activities():
-    return activities
+def test_signup_activity_not_found():
+    response = client.post("/activities/Nonexistent/signup", params={"email": "foo@bar.com"})
+    assert response.status_code == 404
 
-
-@app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
-    """Sign up a student for an activity"""
-    # Validate activity exists
-    if activity_name not in activities:
-        raise HTTPException(status_code=404, detail="Activity not found")
-
-    # Get the specific activity
-    activity = activities[activity_name]
-
-    # Validate student is not already signed up
-    if email in activity["participants"]:
-        raise HTTPException(status_code=400, detail="Student already signed up for this activity")
-
-    # Add student
-    activity["participants"].append(email)
-    return {"message": f"Signed up {email} for {activity_name}"}
-
-
-# Unregister a participant from an activity
-@app.post("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    if activity_name not in activities:
-        raise HTTPException(status_code=404, detail="Activity not found")
-    activity = activities[activity_name]
-    if email not in activity["participants"]:
-        raise HTTPException(status_code=404, detail="Participant not found in this activity")
-    activity["participants"].remove(email)
-    return {"message": f"Unregistered {email} from {activity_name}"}
+def test_unregister_activity_not_found():
+    response = client.post("/activities/Nonexistent/unregister", params={"email": "foo@bar.com"})
+    assert response.status_code == 404
